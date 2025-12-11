@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>科幻粒子场 V3 (优化版：数据流与加速加载)</title>
+    <title>科幻粒子场 V5 (最终稳定版)</title>
     
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.cnmpjs.org/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.cnmpjs.org/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.cnmpjs.org/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
 
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -38,9 +38,9 @@
 </head>
 <body>
     <div class="loading" id="loadingText">
-        👋 **加载中...** (已使用镜像加速)<br>
+        👋 **模型加载中...** (已使用稳定镜像加速)<br>
         <hr style="margin: 10px 0; border-color: rgba(0, 255, 255, 0.3);">
-        **提示:** 伸直食指进行跟随控制。
+        **操作提示:** 请确保摄像头权限已允许，并耐心等待。
     </div>
     <video id="input_video"></video>
     <canvas id="output_canvas"></canvas>
@@ -58,14 +58,14 @@
 
     // --- 全局常量 ---
     const centerPoint = { x: canvasWidth / 2, y: canvasHeight / 2 };
-    const MAX_PARTICLES = 800; // 粒子数量略微减少，提高性能
-    const MIN_DISTANCE_CONNECT = 80; // 优化点 2：粒子连接的最大距离
+    const MAX_PARTICLES = 800; 
+    const MIN_DISTANCE_CONNECT = 80; 
     
     // --- 状态变量 ---
     let currentForceFactor = 0.0; 
     let fingerTipPoint = null; 
     
-    // --- 粒子类 ---
+    // --- 粒子类 (保持不变) ---
     class Particle {
         constructor() {
             this.resetPosition(true);
@@ -73,18 +73,16 @@
             this.color = Math.random() * 30 + 190; 
             this.alpha = 0.8; 
             this.friction = 0.96; 
-            this.speedFactor = 1.5; // 速度系数
+            this.speedFactor = 1.5;
             this.BASE_FORCE = 0.005; 
         }
 
         update() {
-            // 宏观场力计算
             let dx = centerPoint.x - this.x;
             let dy = centerPoint.y - this.y;
             let distanceSq = dx * dx + dy * dy;
             let fieldForce = currentForceFactor * 1000000 / (distanceSq + 50000); 
 
-            // 局部吸引力 (单指跟随效果)
             if (fingerTipPoint) {
                 let fdx = fingerTipPoint.x - this.x;
                 let fdy = fingerTipPoint.y - this.y;
@@ -97,7 +95,6 @@
                 this.vy += localForce * Math.sin(fAngle);
             }
             
-            // 应用宏观场力和随机力
             let randomForceX = (Math.random() - 0.5) * this.BASE_FORCE;
             let randomForceY = (Math.random() - 0.5) * this.BASE_FORCE;
             let angle = Math.atan2(dy, dx);
@@ -105,13 +102,11 @@
             this.vx += fieldForce * Math.cos(angle) + randomForceX;
             this.vy += fieldForce * Math.sin(angle) + randomForceY;
             
-            // 应用速度和摩擦力
             this.x += this.vx;
             this.y += this.vy;
             this.vx *= this.friction;
             this.vy *= this.friction;
 
-            // 边界循环
             if (this.x < -10 || this.x > canvasWidth + 10 || this.y < -10 || this.y > canvasHeight + 10) {
                  this.resetPosition();
             }
@@ -119,27 +114,28 @@
         
         resetPosition(isInitial = false) {
             const side = Math.floor(Math.random() * 4); 
+            const speedFactor = this.speedFactor;
 
-            if (side === 0) { // 上方 (Y < 0)
+            if (side === 0) {
                 this.x = Math.random() * canvasWidth;
                 this.y = -10;
-            } else if (side === 1) { // 下方 (Y > H)
+            } else if (side === 1) { 
                 this.x = Math.random() * canvasWidth;
                 this.y = canvasHeight + 10;
-            } else if (side === 2) { // 左方 (X < 0)
+            } else if (side === 2) { 
                 this.x = -10;
                 this.y = Math.random() * canvasHeight;
-            } else { // 右方 (X > W)
+            } else { 
                 this.x = canvasWidth + 10;
                 this.y = Math.random() * canvasHeight;
             }
             
             if (isInitial) {
-                this.vx = (Math.random() - 0.5) * this.speedFactor;
-                this.vy = (Math.random() - 0.5) * this.speedFactor;
+                this.vx = (Math.random() - 0.5) * speedFactor;
+                this.vy = (Math.random() - 0.5) * speedFactor;
             } else {
-                this.vx = (centerPoint.x - this.x) * 0.005 + (Math.random() - 0.5) * this.speedFactor;
-                this.vy = (centerPoint.y - this.y) * 0.005 + (Math.random() - 0.5) * this.speedFactor;
+                this.vx = (centerPoint.x - this.x) * 0.005 + (Math.random() - 0.5) * speedFactor;
+                this.vy = (centerPoint.y - this.y) * 0.005 + (Math.random() - 0.5) * speedFactor;
             }
         }
 
@@ -160,18 +156,16 @@
     }
     initParticles();
     
-    // --- 优化点 2：添加粒子连接逻辑 (科幻数据流效果) ---
+    // 粒子连接逻辑
     function connectParticles() {
         let opacity = 1;
         for (let i = 0; i < particlesArray.length; i++) {
             for (let j = i; j < particlesArray.length; j++) {
-                // 计算两粒子间距离的平方
                 let dx = particlesArray[i].x - particlesArray[j].x;
                 let dy = particlesArray[i].y - particlesArray[j].y;
                 let distanceSq = dx * dx + dy * dy;
                 
                 if (distanceSq < MIN_DISTANCE_CONNECT * MIN_DISTANCE_CONNECT) {
-                    // 距离越近，透明度越高
                     opacity = 1 - (Math.sqrt(distanceSq) / MIN_DISTANCE_CONNECT);
                     
                     canvasCtx.strokeStyle = `rgba(0, 200, 255, ${opacity * 0.4})`;
@@ -186,11 +180,11 @@
     }
 
 
-    // --- MediaPipe/摄像头设置 (优化点 1：使用镜像 CDN) ---
-    const HANDS_URL_MIRROR = "https://unpkg.com/@mediapipe/hands";
+    // --- MediaPipe 初始化设定 (使用 CNPMJS 镜像) ---
+    const HANDS_URL_STABLE = "https://cdn.cnmpjs.org/@mediapipe/hands";
 
     const hands = new Hands({locateFile: (file) => {
-        return `${HANDS_URL_MIRROR}/${file}`; // 使用 UNPKG 镜像
+        return `${HANDS_URL_STABLE}/${file}`; // 使用 CNPMJS 镜像加载模型
     }});
     hands.setOptions({
         maxNumHands: 1, 
@@ -199,7 +193,7 @@
         minTrackingConfidence: 0.5
     });
 
-    // 手势识别逻辑 (不变)
+    // 手势识别逻辑
     function detectGesture(landmarks) {
         let foldedFingers = 0;
         const TIP_INDEXES = [8, 12, 16, 20];
@@ -216,7 +210,6 @@
 
     // MediaPipe 结果回调函数
     function onResults(results) {
-        // 1. 清除背景 (拖尾效果)
         canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.05)';
         canvasCtx.fillRect(0, 0, canvasWidth, canvasHeight);
         
@@ -227,7 +220,6 @@
             loadingText.style.display = 'none'; 
             const landmarks = results.multiHandLandmarks[0];
 
-            // 捕获食指指尖坐标 (Index 8)
             fingerTipPoint = {
                 x: landmarks[8].x * canvasWidth,
                 y: landmarks[8].y * canvasHeight
@@ -245,23 +237,19 @@
              loadingText.style.display = 'block'; 
         }
 
-        // 平滑过渡当前力
         currentForceFactor += (targetFactor - currentForceFactor) * 0.1;
         
-        // 2. 粒子连接
-        connectParticles(); 
+        connectParticles();
 
-        // 3. 绘制粒子
         for (let i = 0; i < particlesArray.length; i++) {
             particlesArray[i].update();
             particlesArray[i].draw();
         }
         
-        // 4. 循环
         requestAnimationFrame(() => hands.send({image: videoElement}));
     }
 
-    // --- 启动摄像头 (不变) ---
+    // --- 启动摄像头 ---
     const camera = new Camera(videoElement, {
         onFrame: async () => {
             await hands.send({image: videoElement}); 
