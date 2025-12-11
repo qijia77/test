@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>手势控制粒子风暴</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background-color: #000; overflow: hidden; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center;}
+        
+        /* 视频元素隐藏，我们只需要它的数据 */
+        #input_video { display: none; }
+        
+        /* Canvas 覆盖全屏，且需要水平镜像翻转，这样操作才自然 */
+        canvas {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            transform: scaleX(-1); /* 镜像翻转 */
+        }
+
+        .loading {
+            position: absolute;
+            color: white;
+            font-family: sans-serif;
+            background: rgba(0,0,0,0.7);
+            padding: 20px;
+            border-radius: 10px;
+            pointer-events: none;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <div class="loading" id="loadingText">正在加载 AI 模型和摄像头，请稍候...<br>请允许摄像头权限。<br>伸出手掌：发散粒子<br>握紧拳头：聚拢粒子</div>
+    <video id="input_video"></video>
+    <canvas id="output_canvas"></canvas>
+
+<script>
+    const videoElement = document.getElementById('input_video');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    const loadingText = document.getElementById('loadingText');
+
+    let canvasWidth = window.innerWidth;
+    let canvasHeight = window.innerHeight;
+    canvasElement.width = canvasWidth;
+    canvasElement.height = canvasHeight;
+
+    // --- 全局状态变量 ---
+    let handCenterPoint = null; // 存放手掌中心坐标 {x, y}
+    let interactionMode = 'neutral'; // 'neutral'(无手), 'gather'(聚拢), 'scatter'(发散)
+    let particlesArray = [];
+    let hue = 0;
+
+    // --- 粒子类定义 (物理引擎升级版) ---
+    class Particle {
+        constructor() {
+            // 初始位置随机分布在屏幕外围，制造从远处飞来的感觉
+            if (Math.random() > 0.5) {
+                this.x = Math.random() > 0.5 ? 0 : canvasWidth;
+                this.y = Math.random() * canvasHeight;
+            } else {
+                this.x = Math.random() * canvasWidth;
+                this.y = Math.random() > 0.5 ? 0 : canvasHeight;
+            }
+
+            // 速度向量 (vx, vy)
+            this.vx = (Math.random() - 0.5) * 2;
+            this.vy = (Math.random() - 0.5) * 2;
+
+            this.size = Math.random() * 4 + 2; // 粒子稍微小一点，数量多一点
+            this.baseColor = hue; // 记录出生时的颜色色相
+            this.friction = 0.96; // 摩擦力，让粒子运动更平滑
+            this.life = 1; // 生命值，用于透明度
+        }
+
+        update() {
+            // 核心：根据手势模式施加力
+            if (handCenterPoint) {
+                // 计算粒子到手心的距离向量
+                let dx = handCenterPoint.x - this.x;
+                let dy = handCenterPoint.y - this.y;
+                let distanceSq = dx * dx + dy * dy;
+                // 避免距离过近导致力无穷大
+                if (distanceSq < 1000) distanceSq = 1000; 
+                
+                let force = 0;
+                // 引力模式 (握拳)
+                if (interactionMode === 'gather') {
+                    force = 3000 / distanceSq; // 万有引力公式简化版 F = G*M/r^2
+                } 
+                // 斥力模式 (张手)
+                else if (interactionMode === 'scatter') {
+                    force = -5000 / distanceSq; // 负值表示斥力，斥力要更强一点才震撼
+                    this.life -= 0.005; // 发散时粒子逐渐消失
+                }
+
+                // 将力应用到加速度 -> 速度
+                // 使用反正切计算角度
+                let angle = Math.atan2(dy, dx);
+                this.vx += force * Math.cos(angle);
+                this.vy += force * Math.sin(angle);
+            } else {
+                this.life -= 0.01; // 没有手的时候慢慢消失
+            }
+
+            // 应用速度
+            this.x += this.vx;
+            this.y += this.vy;
+            // 应用摩擦力
+            this.vx *= this.friction;
+            this.vy *= this.friction;
+
+            hue += 0.5; // 全局颜色在变
+        }
+
+        draw() {
+            // 颜色结合了全局色相和生命值透明度
+            canvasCtx.fillStyle = `hsla(${this.baseColor + hue}, 100%, 60%, ${this.life})`;
+            canvasCtx.beginPath();
+            canvasCtx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+            canvasCtx.fill();
+        }
+    }
+
+    // 初始化粒子池 (控制在 500 个左右，手机性能有限)
+    function initParticles() {
+        for (let i = 0; i < 500; i++) {
+            particlesArray.push(new Particle());
+        }
+    }
+    initParticles();
+
+    // --- 手势识别逻辑 ---
+    // MediaPipe 提供 21 个点。我们判断指尖(Tip)是否低于第二个关节(PIP)。
+    // 注意：Y轴向下是增加，所以 "低于" 意味着 Y 值更大。
+    function detectGesture(landmarks) {
+        // 关键点索引: 食指尖8, 中指尖12, 无名指尖16, 小指尖20
+        // 对应的第二关节(PIP): 6, 10, 14, 18
+        let foldedFingers = 0;
+        if (landmarks[8].y > landmarks[6].y) foldedFingers++;
+        if (landmarks[12].y > landmarks[10].y) foldedFingers++;
+        if (landmarks[16].y > landmarks[14].y) foldedFingers++;
+        if (landmarks[20].y > landmarks[18].y) foldedFingers++;
+
+        // 如果3根或以上手指弯曲，认为是握拳
+        return foldedFingers >= 3 ? 'gather' : 'scatter';
+    }
+
+    // --- MediaPipe 处理回调 ---
+    // 当 MediaPipe 处理完一帧视频，会调用这个函数
+    function onResults(results) {
+        loadingText.style.display = 'none'; // 隐藏加载提示
+
+        // 1. 绘制半透明背景造成拖尾效果
+        canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.15)';
+        canvasCtx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+        // 2. 分析手势
+        handCenterPoint = null;
+        interactionMode = 'neutral';
+
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            // 只取检测到的第一只手
+            const landmarks = results.multiHandLandmarks[0];
+            
+            // 判断手势
+            interactionMode = detectGesture(landmarks);
+
+            // 获取手掌中心点 (取中指根部点 9 作为中心比较稳定)
+            // MediaPipe 返回的是 0.0-1.0 的比例坐标，需要乘画布尺寸
+            handCenterPoint = {
+                x: landmarks[9].x * canvasWidth,
+                y: landmarks[9].y * canvasHeight
+            };
+            
+            // (可选) 绘制一个淡淡的手掌中心提示点
+            // canvasCtx.fillStyle = interactionMode === 'gather' ? 'red' : 'cyan';
+            // canvasCtx.beginPath();
+            // canvasCtx.arc(handCenterPoint.x, handCenterPoint.y, 10, 0, Math.PI*2);
+            // canvasCtx.fill();
+        }
+
+        // 3. 更新和绘制所有粒子
+        for (let i = 0; i < particlesArray.length; i++) {
+            particlesArray[i].update();
+            particlesArray[i].draw();
+
+            // 如果粒子生命结束或跑太远，重置它
+            if (particlesArray[i].life <= 0 || 
+                particlesArray[i].x < -100 || particlesArray[i].x > canvasWidth + 100 ||
+                particlesArray[i].y < -100 || particlesArray[i].y > canvasHeight + 100
+            ) {
+                particlesArray.splice(i, 1);
+                particlesArray.push(new Particle()); // 生成新的补充
+                i--;
+            }
+        }
+    }
+
+    // --- MediaPipe 初始化设定 ---
+    const hands = new Hands({locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+    }});
+    hands.setOptions({
+        maxNumHands: 1, // 最多检测一只手
+        modelComplexity: 1, // 模型复杂度，1 适中，0 最快但精度低
+        minDetectionConfidence: 0.6,
+        minTrackingConfidence: 0.6
+    });
+    hands.onResults(onResults);
+
+    // --- 启动摄像头 ---
+    const camera = new Camera(videoElement, {
+        onFrame: async () => {
+            await hands.send({image: videoElement});
+        },
+        width: 640, // 降低摄像头分辨率输入以提高性能
+        height: 480,
+        facingMode: 'user' // 使用前置摄像头
+    });
+    camera.start().catch(err => {
+        loadingText.innerHTML = "无法启动摄像头，请确保允许权限并使用 HTTPS 或 localhost 访问。";
+        console.error(err);
+    });
+
+    // 窗口大小改变适应
+    window.addEventListener('resize', () => {
+        canvasWidth = window.innerWidth;
+        canvasHeight = window.innerHeight;
+        canvasElement.width = canvasWidth;
+        canvasElement.height = canvasHeight;
+    });
+
+</script>
+</body>
+</html>
