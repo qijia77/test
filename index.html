@@ -3,18 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>科幻双控粒子场 (食指跟随)</title>
+    <title>科幻粒子场 V3 (优化版：数据流与加速加载)</title>
+    
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { background-color: #000; overflow: hidden; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center;}
         
-        /* 视频元素隐藏 */
         #input_video { display: none; }
         
-        /* Canvas 覆盖全屏，且水平镜像翻转 */
         canvas {
             position: absolute;
             width: 100%;
@@ -38,10 +38,9 @@
 </head>
 <body>
     <div class="loading" id="loadingText">
-        👋 **粒子场控制**：正在加载模型和摄像头...<br>
+        👋 **加载中...** (已使用镜像加速)<br>
         <hr style="margin: 10px 0; border-color: rgba(0, 255, 255, 0.3);">
-        👉 **食指跟随**：粒子会被您的食指吸引。<br>
-        ✊ **握紧拳头:** 全屏聚拢 | 💡 **张开手掌:** 全屏发散
+        **提示:** 伸直食指进行跟随控制。
     </div>
     <video id="input_video"></video>
     <canvas id="output_canvas"></canvas>
@@ -57,74 +56,69 @@
     canvasElement.width = canvasWidth;
     canvasElement.height = canvasHeight;
 
-    // --- 全局状态变量 ---
-    const centerPoint = { x: canvasWidth / 2, y: canvasHeight / 2 }; // 屏幕中心
+    // --- 全局常量 ---
+    const centerPoint = { x: canvasWidth / 2, y: canvasHeight / 2 };
+    const MAX_PARTICLES = 800; // 粒子数量略微减少，提高性能
+    const MIN_DISTANCE_CONNECT = 80; // 优化点 2：粒子连接的最大距离
+    
+    // --- 状态变量 ---
     let currentForceFactor = 0.0; 
-    const BASE_FORCE = 0.005; 
-    const MAX_PARTICLES = 1000; 
+    let fingerTipPoint = null; 
     
-    let fingerTipPoint = null; // 新增：追踪食指指尖的坐标
-    
-    // --- 粒子类定义 ---
+    // --- 粒子类 ---
     class Particle {
         constructor() {
-            this.resetPosition(true); // 首次调用，设置初始速度
+            this.resetPosition(true);
             this.size = Math.random() * 1.5 + 0.5; 
             this.color = Math.random() * 30 + 190; 
             this.alpha = 0.8; 
-            this.friction = 0.96; // 摩擦力减小，粒子运动更快
+            this.friction = 0.96; 
+            this.speedFactor = 1.5; // 速度系数
+            this.BASE_FORCE = 0.005; 
         }
 
         update() {
-            // 1. 计算与屏幕中心距离 (用于宏观场力)
+            // 宏观场力计算
             let dx = centerPoint.x - this.x;
             let dy = centerPoint.y - this.y;
             let distanceSq = dx * dx + dy * dy;
-
-            // 2. 施加宏观场力 (由手势控制)
             let fieldForce = currentForceFactor * 1000000 / (distanceSq + 50000); 
 
-            // 3. 施加局部吸引力 (单指跟随效果)
+            // 局部吸引力 (单指跟随效果)
             if (fingerTipPoint) {
                 let fdx = fingerTipPoint.x - this.x;
                 let fdy = fingerTipPoint.y - this.y;
                 let fDistanceSq = fdx * fdx + fdy * fdy;
-                
-                // 局部吸引力强度 (常数吸引力)
                 const FINGER_ATTRACTION = 800000; 
                 let localForce = FINGER_ATTRACTION / (fDistanceSq + 20000); 
 
-                // 应用局部吸引力
                 let fAngle = Math.atan2(fdy, fdx);
                 this.vx += localForce * Math.cos(fAngle);
                 this.vy += localForce * Math.sin(fAngle);
             }
             
-            // 4. 施加随机微弱力
-            let randomForceX = (Math.random() - 0.5) * BASE_FORCE;
-            let randomForceY = (Math.random() - 0.5) * BASE_FORCE;
-
             // 应用宏观场力和随机力
+            let randomForceX = (Math.random() - 0.5) * this.BASE_FORCE;
+            let randomForceY = (Math.random() - 0.5) * this.BASE_FORCE;
             let angle = Math.atan2(dy, dx);
+            
             this.vx += fieldForce * Math.cos(angle) + randomForceX;
             this.vy += fieldForce * Math.sin(angle) + randomForceY;
             
-            // 5. 应用速度和摩擦力
+            // 应用速度和摩擦力
             this.x += this.vx;
             this.y += this.vy;
             this.vx *= this.friction;
             this.vy *= this.friction;
 
-            // 6. 边界循环
+            // 边界循环
             if (this.x < -10 || this.x > canvasWidth + 10 || this.y < -10 || this.y > canvasHeight + 10) {
                  this.resetPosition();
             }
         }
         
-        // 重置位置到外边缘，并赋予一个微弱的朝向中心的速度
         resetPosition(isInitial = false) {
             const side = Math.floor(Math.random() * 4); 
-            const speedFactor = 1.5; // 粒子移动速度的关键参数
 
             if (side === 0) { // 上方 (Y < 0)
                 this.x = Math.random() * canvasWidth;
@@ -141,12 +135,11 @@
             }
             
             if (isInitial) {
-                this.vx = (Math.random() - 0.5) * speedFactor;
-                this.vy = (Math.random() - 0.5) * speedFactor;
+                this.vx = (Math.random() - 0.5) * this.speedFactor;
+                this.vy = (Math.random() - 0.5) * this.speedFactor;
             } else {
-                // 重置时，给予一个朝向中心的初始推力
-                this.vx = (centerPoint.x - this.x) * 0.005 + (Math.random() - 0.5) * speedFactor;
-                this.vy = (centerPoint.y - this.y) * 0.005 + (Math.random() - 0.5) * speedFactor;
+                this.vx = (centerPoint.x - this.x) * 0.005 + (Math.random() - 0.5) * this.speedFactor;
+                this.vy = (centerPoint.y - this.y) * 0.005 + (Math.random() - 0.5) * this.speedFactor;
             }
         }
 
@@ -166,12 +159,38 @@
         }
     }
     initParticles();
-
-    // --- MediaPipe/摄像头设置 (仅用于手势识别) ---
-    const HANDS_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/hands";
     
+    // --- 优化点 2：添加粒子连接逻辑 (科幻数据流效果) ---
+    function connectParticles() {
+        let opacity = 1;
+        for (let i = 0; i < particlesArray.length; i++) {
+            for (let j = i; j < particlesArray.length; j++) {
+                // 计算两粒子间距离的平方
+                let dx = particlesArray[i].x - particlesArray[j].x;
+                let dy = particlesArray[i].y - particlesArray[j].y;
+                let distanceSq = dx * dx + dy * dy;
+                
+                if (distanceSq < MIN_DISTANCE_CONNECT * MIN_DISTANCE_CONNECT) {
+                    // 距离越近，透明度越高
+                    opacity = 1 - (Math.sqrt(distanceSq) / MIN_DISTANCE_CONNECT);
+                    
+                    canvasCtx.strokeStyle = `rgba(0, 200, 255, ${opacity * 0.4})`;
+                    canvasCtx.lineWidth = 0.5;
+                    canvasCtx.beginPath();
+                    canvasCtx.moveTo(particlesArray[i].x, particlesArray[i].y);
+                    canvasCtx.lineTo(particlesArray[j].x, particlesArray[j].y);
+                    canvasCtx.stroke();
+                }
+            }
+        }
+    }
+
+
+    // --- MediaPipe/摄像头设置 (优化点 1：使用镜像 CDN) ---
+    const HANDS_URL_MIRROR = "https://unpkg.com/@mediapipe/hands";
+
     const hands = new Hands({locateFile: (file) => {
-        return `${HANDS_URL}/${file}`;
+        return `${HANDS_URL_MIRROR}/${file}`; // 使用 UNPKG 镜像
     }});
     hands.setOptions({
         maxNumHands: 1, 
@@ -180,7 +199,7 @@
         minTrackingConfidence: 0.5
     });
 
-    // 优化后的手势识别逻辑
+    // 手势识别逻辑 (不变)
     function detectGesture(landmarks) {
         let foldedFingers = 0;
         const TIP_INDEXES = [8, 12, 16, 20];
@@ -191,21 +210,16 @@
                 foldedFingers++;
             }
         }
-
-        if (foldedFingers >= 3) {
-            return 'gather';
-        } 
-        return 'scatter';
+        return foldedFingers >= 3 ? 'gather' : 'scatter';
     }
 
 
     // MediaPipe 结果回调函数
     function onResults(results) {
-        // 1. 清除背景 (增加微弱拖尾)
+        // 1. 清除背景 (拖尾效果)
         canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.05)';
         canvasCtx.fillRect(0, 0, canvasWidth, canvasHeight);
         
-        // 2. 更新宏观场力和食指坐标
         let targetFactor = 0.0; 
         fingerTipPoint = null;
 
@@ -222,12 +236,11 @@
             const gesture = detectGesture(landmarks);
             
             if (gesture === 'gather') {
-                targetFactor = 0.75; // 强引力
+                targetFactor = 0.75; 
             } else if (gesture === 'scatter') {
-                targetFactor = -1.5; // 强斥力
+                targetFactor = -1.5; 
             }
         } else {
-             // 如果手部消失，力慢速归零，提示文字显示
              targetFactor = 0.0;
              loadingText.style.display = 'block'; 
         }
@@ -235,6 +248,9 @@
         // 平滑过渡当前力
         currentForceFactor += (targetFactor - currentForceFactor) * 0.1;
         
+        // 2. 粒子连接
+        connectParticles(); 
+
         // 3. 绘制粒子
         for (let i = 0; i < particlesArray.length; i++) {
             particlesArray[i].update();
@@ -245,7 +261,7 @@
         requestAnimationFrame(() => hands.send({image: videoElement}));
     }
 
-    // --- 启动摄像头 ---
+    // --- 启动摄像头 (不变) ---
     const camera = new Camera(videoElement, {
         onFrame: async () => {
             await hands.send({image: videoElement}); 
